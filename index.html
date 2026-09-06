@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>音の出るジェネレーティブ模様</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a12; }
+  body {
+    font-family: -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", sans-serif;
+    color: #e8e8f0;
+    touch-action: none;
+  }
+  #stage { position: fixed; inset: 0; display: block; cursor: crosshair; }
+
+  .panel {
+    position: fixed; left: 16px; top: 16px; z-index: 10;
+    background: rgba(16, 16, 28, 0.72);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 14px;
+    padding: 14px 16px;
+    max-width: 280px;
+    user-select: none;
+    transition: opacity 0.4s, transform 0.4s;
+  }
+  .panel.hidden { opacity: 0; transform: translateY(-8px); pointer-events: none; }
+  .panel h1 { font-size: 14px; font-weight: 600; letter-spacing: 0.04em; margin-bottom: 8px; }
+  .panel p { font-size: 11.5px; line-height: 1.7; color: #a8a8c0; }
+  .panel .keys { margin-top: 8px; font-size: 11px; color: #8a8aa8; }
+  .panel .keys b { color: #c8c8e0; font-weight: 600; }
+
+  .toolbar {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    z-index: 10; display: flex; gap: 8px;
+    background: rgba(16, 16, 28, 0.72);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 999px;
+    padding: 7px 9px;
+    user-select: none;
+  }
+  .toolbar button {
+    appearance: none; border: none; cursor: pointer;
+    background: rgba(255, 255, 255, 0.06);
+    color: #d8d8e8;
+    font: inherit; font-size: 12px;
+    padding: 8px 14px;
+    border-radius: 999px;
+    transition: background 0.15s, color 0.15s;
+    white-space: nowrap;
+  }
+  .toolbar button:hover { background: rgba(255, 255, 255, 0.14); }
+  .toolbar button:active { transform: scale(0.96); }
+  .toolbar button.on { background: #6c6cff; color: #fff; }
+
+  .hint {
+    position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    z-index: 5; font-size: 13px; color: rgba(255, 255, 255, 0.35);
+    letter-spacing: 0.08em; pointer-events: none;
+    transition: opacity 0.6s;
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+
+<div class="panel" id="panel">
+  <h1>音の出るジェネレーティブ模様</h1>
+  <p>画面をなぞると、その軌跡に沿って幾何学模様が育ちます。色は時間でゆっくり変化。クリック（タップ）で効果音が鳴ります。</p>
+  <div class="keys">
+    <b>C</b> クリア　<b>S</b> PNG保存　<b>H</b> パネル表示切替<br>
+    <b>Space</b> 音のオン/オフ
+  </div>
+</div>
+
+<div class="toolbar">
+  <button id="btnSound" class="on">♪ 音 オン</button>
+  <button id="btnClear">クリア</button>
+  <button id="btnSave">PNG保存</button>
+  <button id="btnPanel">パネル</button>
+</div>
+
+<div class="hint" id="hint">ドラッグして描く</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('stage');
+  const ctx = canvas.getContext('2d');
+  let W, H, DPR;
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = W * DPR;
+    canvas.height = H * DPR;
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    // 背景を塗り直し（リサイズ時に既存の絵は失われる — シンプルさ優先）
+    paintBackground();
+  }
+
+  function paintBackground() {
+    const g = ctx.createLinearGradient(0, 0, W, H);
+    g.addColorStop(0, '#0a0a14');
+    g.addColorStop(1, '#0f0a18');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // ---- 色（時間でゆっくり回るHSL） ----
+  function hueNow() {
+    return (performance.now() * 0.012) % 360;
+  }
+
+  // ---- 音（Web Audio） ----
+  let actx = null;
+  let soundOn = true;
+  function ensureAudio() {
+    if (!actx) {
+      actx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (actx.state === 'suspended') actx.resume();
+  }
+  const PENTA = [0, 2, 4, 7, 9]; // ペンタトニック
+  function playNote(velocity, pan) {
+    if (!soundOn) return;
+    ensureAudio();
+    const t = actx.currentTime;
+    const deg = PENTA[Math.floor(Math.random() * PENTA.length)];
+    const octave = 3 + Math.floor(Math.random() * 3);
+    const midi = 12 * octave + deg;
+    const freq = 440 * Math.pow(2, (midi - 69) / 12);
+
+    const osc = actx.createOscillator();
+    osc.type = Math.random() < 0.5 ? 'sine' : 'triangle';
+    osc.frequency.value = freq;
+
+    const gain = actx.createGain();
+    const peak = 0.06 + velocity * 0.14;
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(peak, t + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.9);
+
+    const panner = actx.createStereoPanner ? actx.createStereoPanner() : null;
+    if (panner) { panner.pan.value = Math.max(-1, Math.min(1, pan)); osc.connect(gain); gain.connect(panner); panner.connect(actx.destination); }
+    else { osc.connect(gain); gain.connect(actx.destination); }
+
+    osc.start(t);
+    osc.stop(t + 1.0);
+  }
+
+  // ---- 描画 ----
+  let last = null;
+  let drawing = false;
+
+  function stamp(x, y, speed) {
+    const hue = hueNow();
+    const sat = 70;
+    const light = 55;
+    const size = Math.max(6, 34 - speed * 0.9);
+    const petals = 3 + (Math.floor(x + y) % 5);
+    const rot = (x + y) * 0.01 + performance.now() * 0.0004;
+
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(rot);
+    ctx.globalCompositeOperation = 'lighter';
+
+    for (let i = 0; i < petals; i++) {
+      ctx.rotate((Math.PI * 2) / petals);
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.quadraticCurveTo(size * 0.6, -size * 0.5, 0, -size);
+      ctx.quadraticCurveTo(-size * 0.6, -size * 0.5, 0, 0);
+      ctx.fillStyle = `hsla(${(hue + i * 12) % 360}, ${sat}%, ${light}%, 0.16)`;
+      ctx.fill();
+    }
+    ctx.beginPath();
+    ctx.arc(0, 0, size * 0.18, 0, Math.PI * 2);
+    ctx.fillStyle = `hsla(${(hue + 40) % 360}, ${sat}%, ${light + 15}%, 0.5)`;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function line(x0, y0, x1, y1, speed) {
+    const hue = hueNow();
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = `hsla(${hue}, 70%, 60%, 0.22)`;
+    ctx.lineWidth = Math.max(1, 5 - speed * 0.15);
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.stroke();
+    // 対称（左右ミラー）でカレイドスコープ感
+    ctx.strokeStyle = `hsla(${(hue + 180) % 360}, 70%, 60%, 0.13)`;
+    ctx.beginPath();
+    ctx.moveTo(W - x0, y0);
+    ctx.lineTo(W - x1, y1);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  let acc = 0;
+  function onMove(x, y) {
+    const hint = document.getElementById('hint');
+    if (hint.style.opacity !== '0') hint.style.opacity = '0';
+
+    if (last) {
+      const dx = x - last.x, dy = y - last.y;
+      const dist = Math.hypot(dx, dy);
+      const speed = dist;
+      line(last.x, last.y, x, y, speed);
+      acc += dist;
+      if (acc > 14) {
+        acc = 0;
+        stamp(x, y, speed);
+        stamp(W - x, y, speed); // ミラー
+      }
+    }
+    last = { x, y };
+  }
+
+  // ---- 入力 ----
+  function pos(e) {
+    const t = e.touches ? e.touches[0] : e;
+    return { x: t.clientX, y: t.clientY };
+  }
+  canvas.addEventListener('pointerdown', (e) => {
+    drawing = true;
+    last = pos(e);
+    ensureAudio();
+    playNote(0.9, (last.x / W) * 2 - 1);
+    stamp(last.x, last.y, 0);
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!drawing) return;
+    const p = pos(e);
+    onMove(p.x, p.y);
+    if (Math.random() < 0.14) playNote(0.35, (p.x / W) * 2 - 1);
+  });
+  window.addEventListener('pointerup', () => { drawing = false; last = null; });
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  // ---- ボタン ----
+  const btnSound = document.getElementById('btnSound');
+  const btnPanel = document.getElementById('btnPanel');
+  const panel = document.getElementById('panel');
+
+  function toggleSound() {
+    soundOn = !soundOn;
+    btnSound.classList.toggle('on', soundOn);
+    btnSound.textContent = soundOn ? '♪ 音 オン' : '♪ 音 オフ';
+    if (soundOn) ensureAudio();
+  }
+  function clearCanvas() { paintBackground(); }
+  function save() {
+    const a = document.createElement('a');
+    a.download = 'oto-moyo-' + Date.now() + '.png';
+    a.href = canvas.toDataURL('image/png');
+    a.click();
+  }
+  function togglePanel() { panel.classList.toggle('hidden'); }
+
+  btnSound.addEventListener('click', toggleSound);
+  document.getElementById('btnClear').addEventListener('click', clearCanvas);
+  document.getElementById('btnSave').addEventListener('click', save);
+  btnPanel.addEventListener('click', togglePanel);
+
+  window.addEventListener('keydown', (e) => {
+    const k = e.key.toLowerCase();
+    if (k === 'c') clearCanvas();
+    else if (k === 's') save();
+    else if (k === 'h') togglePanel();
+    else if (e.code === 'Space') { e.preventDefault(); toggleSound(); }
+  });
+
+  window.addEventListener('resize', resize);
+  resize();
+})();
+</script>
+</body>
+</html>
